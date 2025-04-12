@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
+	"io/ioutil"
 	"time"
 
 	jsoniter "github.com/json-iterator/go"
@@ -68,14 +69,24 @@ func (s *Source) Run(ctx context.Context, domain string, session *subscraping.Se
 		}
 
 		var response hunterResp
-		err = jsoniter.NewDecoder(resp.Body).Decode(&response)
+		// 先读取响应体内容
+		bodyBytes, err := ioutil.ReadAll(resp.Body)
 		if err != nil {
 			results <- subscraping.Result{Source: s.Name(), Type: subscraping.Error, Error: err}
 			s.errors++
-			resp.Body.Close()
 			return
 		}
-		resp.Body.Close()
+		defer resp.Body.Close() // 确保 Body 被关
+
+		// 将响应体转换为字符串
+		responseData := string(bodyBytes)
+
+		err = jsoniter.ConfigCompatibleWithStandardLibrary.Unmarshal(bodyBytes, &response)
+		if err != nil {
+			results <- subscraping.Result{Source: s.Name(), Type: subscraping.Error, Error: err}
+			s.errors++
+			return
+		}
 
 		if response.Code == 401 || response.Code == 400 {
 			results <- subscraping.Result{
@@ -91,12 +102,15 @@ func (s *Source) Run(ctx context.Context, domain string, session *subscraping.Se
 				results <- subscraping.Result{Source: s.Name(), Type: subscraping.Subdomain, Value: subdomain}
 				s.results++
 			}
+			results <- subscraping.Result{Source: s.Name(), Type: subscraping.Response, Response: responseData}
 		}
 		//count pages
 		pages = int(response.Data.Total/100) + 1
-
+		fmt.Println("total", response.Data.Total)
+		fmt.Println("pages", pages)
 		if pages > 2 {
 			for currentPage := 2; currentPage <= pages; currentPage++ {
+				fmt.Println("currentPage", currentPage)
 				resp, err = session.SimpleGet(ctx, fmt.Sprintf("https://hunter.qianxin.com/openApi/search?api-key=%s&search=%s&page=%d&page_size=100&is_web=3", randomApiKey, qbase64, currentPage))
 				if err != nil && resp == nil {
 					results <- subscraping.Result{Source: s.Name(), Type: subscraping.Error, Error: err}
@@ -128,6 +142,7 @@ func (s *Source) Run(ctx context.Context, domain string, session *subscraping.Se
 						results <- subscraping.Result{Source: s.Name(), Type: subscraping.Subdomain, Value: subdomain}
 						s.results++
 					}
+					results <- subscraping.Result{Source: s.Name(), Type: subscraping.Response, Response: responseData}
 				}
 			}
 		}
